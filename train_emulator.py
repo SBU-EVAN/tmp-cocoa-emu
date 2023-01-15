@@ -9,6 +9,7 @@ from cocoa_emu import Config
 from cocoa_emu import NNEmulator, nn_pca_emulator  #KZ: not working, no idea why
 
 debug=False
+thin_int=1
 
 configfile = sys.argv[1]
 config = Config(configfile)
@@ -22,6 +23,7 @@ file = sys.argv[2]
 #train_data_vectors = []
 
 #for file in train_samples_files:
+print('Opening:',file)
 train_samples=np.load(file+'_samples_0.npy')#.append(np.load(file+'_samples_0.npy'))
 train_data_vectors=np.load(file+'_data_vectors_0.npy')#.append(np.load(file+'_data_vectors_0.npy'))
 if debug:
@@ -52,7 +54,7 @@ elif config.probe=='3x2pt':
     print("trianing for 3x2pt")
     train_data_vectors = train_data_vectors
     cov_inv = np.linalg.inv(config.cov) #NO mask here for cov_inv enters training
-    OUTPUT_DIM = config.output_dim #config will do it automatically, check config.py
+    OUTPUT_DIM = config.output_dims #config will do it automatically, check config.py
     dv_fid =config.dv_fid
     dv_std = config.dv_std
 else:
@@ -90,9 +92,12 @@ print("training LHC samples after chi2 cut: ", len(train_samples))
 
 #adding points from chains here to avoid chi2 cut
 if len(sys.argv) > 3:
-    print("training with posterior samples")
-    train_samples_file2      = np.load(sys.argv[3]+'_samples_0.npy')
-    train_data_vectors_file2 = np.load(sys.argv[3]+'_data_vectors_0.npy')[:,:OUTPUT_DIM]
+    for i in range(3,len(sys.argv)):
+        print("Opening File:",sys.argv[i])
+        train_samples_file2      = np.load(sys.argv[i]+'_samples_0.npy')
+        train_data_vectors_file2 = np.load(sys.argv[i]+'_data_vectors_0.npy')[:,:OUTPUT_DIM]
+        train_samples = np.vstack((train_samples, train_samples_file2))
+        train_data_vectors = np.vstack((train_data_vectors, train_data_vectors_file2))
     if debug:
         print('(debug)')
         print('posterior')
@@ -100,11 +105,7 @@ if len(sys.argv) > 3:
         #print(train_data_vectors_file2[0])
         print('(end debug)')
     
-    train_samples = np.vstack((train_samples, train_samples_file2))
-    train_data_vectors = np.vstack((train_data_vectors, train_data_vectors_file2))
-    print("posterior samples contains: ", len(train_samples_file2))
-
-print("Total samples enter the training: ", len(train_samples))
+    #print("posterior samples contains: ", len(train_samples_file2))
 
 ##Normalize the data vectors for training based on the maximum##
 #dv_max = np.abs(train_data_vectors).max(axis=0)
@@ -126,19 +127,18 @@ if debug:
     #print(validation_data_vectors[0])
     print('(end debug)')
         
-validation_data_vectors = validation_data_vectors[select_chi_sq]
-validation_samples      = validation_samples[select_chi_sq]
-
-print("validation samples after chi2 cut: ", len(validation_samples))
-
+#validation_data_vectors = validation_data_vectors[select_chi_sq]
+#validation_samples      = validation_samples[select_chi_sq]
 
 ##### shuffeling #####
-def unison_shuffled_copies(a, b):
+def unison_shuffled_copies(a, b, thin=False):
     assert len(a) == len(b)
     p = np.random.permutation(len(a))
-    return a[p], b[p]
+    samples = a[p]
+    dvs     = b[p]
+    return samples[0::thin_int], dvs[0::thin_int]
 
-train_samples, train_data_vectors = unison_shuffled_copies(train_samples, train_data_vectors)
+train_samples, train_data_vectors = unison_shuffled_copies(train_samples, train_data_vectors,thin=True)
 validation_samples, validation_data_vectors = unison_shuffled_copies(validation_samples, validation_data_vectors)
 
 # Convert to eigenbasis if PCA
@@ -155,16 +155,22 @@ if config.do_PCA:
     evals = eigensys[0]
     evecs = eigensys[1]
 
+    #print(evals.shape)
+    #print(evecs.shape)
+
     # truncate PCAs
     # we need to keep ALL indices, cant forget unmodelled dimensions add to loss.
     n_PCA = config.n_PCA
+    if n_PCA>OUTPUT_DIM:
+        n_PCA=OUTPUT_DIM
+        
     sorted_idxs = np.argsort(1/evals)
-    pc_idxs = sorted_idxs[:n_PCA]
-    non_pc_idxs = sorted_idxs[n_PCA:] 
+    #pc_idxs = sorted_idxs[:n_PCA]
+    #non_pc_idxs = sorted_idxs[n_PCA:] 
     #pca_vecs = evecs[pc_idxs]
 
-    print('pca idxs   :',len(pc_idxs))
-    print('nonpca idxs:',len(non_pc_idxs))
+    #print('pca idxs   :',len(pc_idxs))
+    #print('nonpca idxs:',len(non_pc_idxs))
 
     # Now we change basis to the eigenbasis
     dv = np.array([dv_fid for _ in range(len(train_data_vectors))])
@@ -172,10 +178,10 @@ if config.do_PCA:
     dv = np.array([dv_fid for _ in range(len(validation_data_vectors))])
     validation_data_vectors = np.transpose((np.linalg.inv(evecs) @ np.transpose(validation_data_vectors - dv)))#[pc_idxs])
 
-    cov_inv_pc = np.diag(1/evals[pc_idxs])
-    cov_inv_npc = np.diag(1/evals[non_pc_idxs])
-    dv_std = np.sqrt(evals)
-
+    cov_inv_pc = np.diag(1/evals)#[pc_idxs])
+    cov_inv_npc = np.diag(1/evals)#[non_pc_idxs])
+    dv_std = np.sqrt(evals)*10
+    print('N_PCs:', n_PCA)
     print('cov inv pc shape:',cov_inv_pc.shape)
     print('cov inv non-pc shape:',cov_inv_npc.shape)
     # fix output dim
@@ -183,15 +189,17 @@ if config.do_PCA:
 
 #    if debug:
     #print('[ debug ]   PCA bais training DV array shape:', train_data_vectors.shape)#, file=sys.stderr)
-
+print("Number of training points:  ", len(train_samples))
+print("Number of validation points:", len(validation_samples))
 #print("Training emulator...")
 # cuda or cpu
+print('cuda device avaliable?  ',torch.cuda.is_available())
 if torch.cuda.is_available():
-    device = 'gpu'
+    device = 'cuda'
 else:
     device = 'cpu'
-    torch.set_num_interop_threads(60) # Inter-op parallelism
-    torch.set_num_threads(60) # Intra-op parallelism
+    torch.set_num_interop_threads(32) # Inter-op parallelism
+    torch.set_num_threads(32) # `Intra-op parallelism
 
 print('Using device: ',device)
     
@@ -204,13 +212,13 @@ VS = torch.Tensor(validation_samples)
 VDV = torch.Tensor(validation_data_vectors)
 #VDV.to(device)
 
-emu = nn_pca_emulator(config.n_dim, OUTPUT_DIM, 
+emu = nn_pca_emulator(config.n_dim, n_PCA, #config.n_dim
                         dv_fid, dv_std, cov_inv_pc,cov_inv_npc, 
-                        pc_idxs, non_pc_idxs,
-                        device, reduce_lr=False)#, PCA_vecs=pca_vecs)
-emu.train(TS, TDV, VS, VDV, batch_size=config.batch_size, n_epochs=config.n_epochs)
+                        #pc_idxs, non_pc_idxs,
+                        device, reduce_lr=True)#, PCA_vecs=pca_vecs)
+emu.train(TS, TDV, VS, VDV, batch_size=20000,n_epochs=150)# n_epochs=config.n_epochs)
 print("model saved to ",str(config.savedir))
-#emu.save(config.savedir + '/model')
+emu.save(config.savedir + '/model')
 
 
 print("DONE!!")   
