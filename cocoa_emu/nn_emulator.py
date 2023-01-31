@@ -231,11 +231,19 @@ class nn_pca_emulator:
     def __init__(self, 
                   N_DIM, OUTPUT_DIM, 
                   dv_fid, dv_std, cov_inv_pc, cov_inv_npc,
+                  evecs,
                   #pca_idxs, idxs_C,
                   device, 
-                  optim=None, reduce_lr=True, scheduler=None):
+                  optim=None, reduce_lr=True, scheduler=None,
+                  dtype='float'):
+        if dtype=='double':
+            torch.set_default_dtype(torch.double)
         print('input dimension = {}'.format(N_DIM))
         print('output dimension = {}'.format(OUTPUT_DIM))
+
+        if dtype=='double':
+            torch.set_default_dtype(torch.double)
+            print('default data type = double')
 
         self.N_DIM = N_DIM
         self.OUTPUT_DIM = OUTPUT_DIM
@@ -249,32 +257,12 @@ class nn_pca_emulator:
         self.device = device 
         self.reduce_lr = reduce_lr
 
-        #self.pca_idxs = pca_idxs
-        #self.idxs_C = idxs_C
+        self.evecs = torch.Tensor(evecs)
 
         self.trained = False     
         #self.PCA_vecs = torch.Tensor(PCA_vecs)
         
         self.model = nn.Sequential(
-                # nn.Linear(N_DIM, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, 4096),
-                # nn.Tanh(),#nn.ReLU(),
-                # nn.Dropout(0.3),
-                # nn.Linear(4096, OUTPUT_DIM),
                 nn.Linear(N_DIM, 4096),
                 ResBlock(4096, 4096),
                 nn.Dropout(0.3),
@@ -282,6 +270,9 @@ class nn_pca_emulator:
                 nn.Dropout(0.3),
                 ResBlock(4096, 4096),
                 nn.Dropout(0.3),
+                # nn.Linear(N_DIM, 12000),
+                # ResBlock(12000, 12000),
+                # nn.Dropout(0.3),
                 nn.Tanh(),
                 nn.Linear(4096, OUTPUT_DIM),
                 Affine()
@@ -304,8 +295,9 @@ class nn_pca_emulator:
 
         # ge normalization factors
         if not self.trained:
-            self.X_mean = torch.Tensor(X.mean(axis=0, keepdims=True))
-            self.X_std  = torch.Tensor(X.std(axis=0, keepdims=True))
+            self.X_mean = torch.Tensor(X.mean(axis=0, keepdims=True).double())
+            print(self.X_mean.shape)
+            self.X_std  = torch.Tensor(X.std(axis=0, keepdims=True).double())
             self.y_mean = self.dv_fid
             self.y_std  = self.dv_std
 
@@ -315,6 +307,7 @@ class nn_pca_emulator:
         loss = 100.
 
         # send everything to device
+        self.model.to(self.device)
         tmp_y_std        = self.y_std.to(self.device)
         tmp_cov_inv_pc   = self.cov_inv_pc.to(self.device)
         tmp_cov_inv_npc  = self.cov_inv_npc.to(self.device)
@@ -379,17 +372,22 @@ class nn_pca_emulator:
         #np.savetxt("test_dv.txt", np.array( [y_validation.detach().numpy()[-1], y_vali_pred.detach().numpy()[-1]] ), fmt='%s')
         self.trained = True
 
-    def predict(self, X, evecs):
+    def predict(self, X):
         assert self.trained, "The emulator needs to be trained first before predicting"
 
         with torch.no_grad():
-            #X_mean = self.X_mean.clone().detach()
-            #X_std  = self.X_std.clone().detach()
-
             y_pred = (self.model((X - self.X_mean) / self.X_std).double() * self.dv_std.double()).numpy() #normalization
-        #print((y_pred @ np.linalg.inv(evecs)).shape)
-        #print(np.array([self.dv_fid.numpy()]).shape)
-        y_pred = y_pred @ np.linalg.inv(evecs)+ np.array([self.dv_fid.numpy()]) #@ (np.transpose(evecs))+ self.dv_fid.numpy() #change of basis
+
+        y_pred = y_pred @ np.linalg.inv(self.evecs)+ np.array([self.dv_fid.numpy()]) #@ (np.transpose(evecs))+ self.dv_fid.numpy() #change of basis
+        return y_pred
+
+    def predict_evecs(self, X, evec_arr):
+        assert self.trained, "The emulator needs to be trained first before predicting"
+
+        with torch.no_grad():
+            y_pred = (self.model((X - self.X_mean) / self.X_std).double() * self.dv_std.double()).numpy() #normalization
+            
+        y_pred = y_pred @ np.linalg.inv(evec_arr)+ np.array([self.dv_fid.numpy()]) #@ (np.transpose(evecs))+ self.dv_fid.numpy() #change of basis
         return y_pred
 
     def save(self, filename):
@@ -397,23 +395,19 @@ class nn_pca_emulator:
         with h5.File(filename + '.h5', 'w') as f:
             f['X_mean'] = self.X_mean
             f['X_std']  = self.X_std
-            #f['Y_mean'] = self.y_mean
-            #f['Y_std']  = self.y_std
             f['dv_fid'] = self.dv_fid
             f['dv_std'] = self.dv_std
-            #f['dv_max'] = self.dv_max
+            f['evecs']  = self.evecs
         
     def load(self, filename, device='cpu'):
         self.trained = True
         self.model = torch.load(filename,map_location=device)
         self.model.eval()
         with h5.File(filename + '.h5', 'r') as f:
-            self.X_mean = torch.Tensor(f['X_mean'][:])
-            self.X_std  = torch.Tensor(f['X_std'][:])
-            #self.y_mean = torch.Tensor(f['Y_mean'][:])
-            #self.y_std  = torch.Tensor(f['Y_std'][:])
-            self.dv_fid = torch.Tensor(f['dv_fid'][:])
-            self.dv_std = torch.Tensor(f['dv_std'][:])
-            #self.dv_max = torch.Tensor(f['dv_max'][:])
+            self.X_mean = torch.Tensor(f['X_mean'][:]).double()
+            self.X_std  = torch.Tensor(f['X_std'][:]).double()
+            self.dv_fid = torch.Tensor(f['dv_fid'][:]).double()
+            self.dv_std = torch.Tensor(f['dv_std'][:]).double()
+            self.evecs  = torch.Tensor(f['evecs'][:]).double()
 
 
