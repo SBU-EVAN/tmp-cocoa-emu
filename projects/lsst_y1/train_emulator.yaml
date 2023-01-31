@@ -301,9 +301,9 @@ emulator:
       n_resample: 96 #KZ debug
       emu_type: nn
       batch_size: 10000
-      n_epochs: 150
+      n_epochs: 200
       do_PCA: true
-      n_PCA: 780
+      n_PCA: 1560
   shear_calib:
       mask: ./projects/lsst_y1/data/emu_files/shear_calib_mask.npy
       prior_std: 0.005, 0.005, 0.005, 0.005, 0.005
@@ -323,7 +323,9 @@ emulator:
       temper0: 0.05
       temper0: 0.99 #KZ debug
       temper_increment: 0.1
-  probe: 'cosmic_shear'
+  galaxy_bias:
+      mask: ./projects/lsst_y1/data/emu_files/bias_mask.npy
+  probe: 'cosmic_shear' #'3x2pt' 'cosmic_shear'
 
 
 output: ./projects/lsst_y1/chains/train_emulator
