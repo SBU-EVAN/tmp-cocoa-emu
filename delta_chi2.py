@@ -12,138 +12,91 @@ from cocoa_emu.sampling import EmuSampler
 # just for convinience
 from datetime import datetime
 
-#torch.set_default_dtype(torch.double)
-
-##3x2 setting: separate cosmic shear and 2x2pt
-OUTPUT_DIM=780
-BIN_SIZE=OUTPUT_DIM
-
+#compute using double
+torch.set_default_dtype(torch.double)
 
 def get_chi2(dv_predict, dv_exact, mask, cov_inv):
-    ## GPU emulators works well with float32
-    #print('===')
-    #print(dv_predict)
-    #print(dv_exact)
-    #print('===')
     delta_dv = (dv_predict - np.float32(dv_exact))[mask]
     chi2 = np.matmul( np.matmul(np.transpose(delta_dv), np.float32(cov_inv)) , delta_dv  )   
     return chi2
 
-
-#os.environ["OMP_NUM_THREADS"] = "1"
-
-configfile = './projects/lsst_y1/train_emulator.yaml'
+# adjust config
+configfile = './projects/lsst_y1/train_emulator_dzl.yaml'
 config = Config(configfile)
 
-samples_validation = np.load('./projects/lsst_y1/emulator_output/chains/vali_post_T1_samples_0.npy')#[::60000]
-dv_validation      = np.load('./projects/lsst_y1/emulator_output/chains/vali_post_T1_data_vectors_0.npy')#[::60000]
-#samples_validation = np.load('./projects/lsst_y1/emulator_output/chains/train_post_600k_T8_samples_0.npy')[::6000]
-#dv_validation      = np.load('./projects/lsst_y1/emulator_output/chains/train_post_600k_T8_data_vectors_0.npy')[::6000]
+# open validation samples
+# !!! Watch thin factor !!!
+samples_validation = np.load('./projects/lsst_y1/emulator_output/chains/vali_post_T1_3x2_samples_0.npy')[::60]
+dv_validation      = np.load('./projects/lsst_y1/emulator_output/chains/vali_post_T1_3x2_data_vectors_0.npy')[::60]
 
-if config.probe =='cosmic_shear':
-    dv_validation = dv_validation[:,:OUTPUT_DIM]
-    mask = config.mask[0:OUTPUT_DIM]
-else:
-    print("3x2 not tested")
-    quit()
-    
-mask = np.ones(OUTPUT_DIM,dtype=bool)
+# output dim for full 3x2
+# adjust as needed
+OUTPUT_DIM=1560
+BIN_SIZE=OUTPUT_DIM
+mask=config.mask
+
 cov            = config.cov[0:OUTPUT_DIM, 0:OUTPUT_DIM]
 cov_inv        = np.linalg.inv(config.cov[0:OUTPUT_DIM, 0:OUTPUT_DIM])
-#print(cov[mask][:,mask].shape)
 cov_inv_masked = np.linalg.inv(config.cov[0:OUTPUT_DIM, 0:OUTPUT_DIM][mask][:,mask])
-
-#onfigfile = './projects/lsst_y1/train_emulator.yaml'
-#config_test = Config(configfile)
-#cov_test= config_test.cov[0:OUTPUT_DIM, 0:OUTPUT_DIM]
-
-# do diagonalizatieigensys = np.linalg.eig(cov)
-eigensys = np.linalg.eig(cov)
-evals = eigensys[0]
-evecs = eigensys[1]
-cov_inv_masked = np.diag(1/evals)
-cov_inv_masked = evecs @ cov_inv_masked @ np.linalg.inv(evecs)
-
 
 logA   = samples_validation[:,0]
 ns     = samples_validation[:,1]
 H0     = samples_validation[:,2]
 Omegab = samples_validation[:,3]
 Omegac = samples_validation[:,4]
-dz1    = samples_validation[:,5]
-dz2    = samples_validation[:,6]
-dz3    = samples_validation[:,7]
-dz4    = samples_validation[:,8]
-dz5    = samples_validation[:,9]
-
-print('number of points to plot',len(samples_validation))
+# dz1    = samples_validation[:,5]
+# dz2    = samples_validation[:,6]
+# dz3    = samples_validation[:,7]
+# dz4    = samples_validation[:,8]
+# dz5    = samples_validation[:,9]
 
 bin_count = 0
 start_idx = 0
 end_idx   = 0
 
-# #Loop over the models glue them together
-# #It's more intuitive to take one sample at a time, but that would require too many loading of the emulator
-# #The loop below is to get dv_predict of ALL samples, bin by bin.
-# for i in range(1):
-#     device='cpu'
-#     emu = nn_pca_emulator(config.n_dim, BIN_SIZE, config.dv_fid, config.dv_std, cov, cov, 0, 0, device) #should privde dv_max instead of dv_fid, but emu.load will make it correct
-#     emu.load('projects/lsst_y1/emulator_output/models/model')
-#     print('emulator loaded')
-#     tmp = []
-#     for j in range(len(samples_validation)):
-
-#         theta = torch.Tensor(samples_validation[j])
-#         dv_emu = emu.predict(theta,evecs)[0]
-
-#         tmp.append(dv_emu)
-#     tmp = np.array(tmp)
-
-#     if i==0:
-#         dv_predict = tmp
-#     else:
-#         dv_predict = np.append(dv_predict, tmp, axis = 1)
-
-
-# print("testing", np.shape(dv_predict))
-
-# chi2_list = []
-# count=0
-# count2=0
-# for i in range(len(dv_predict)):
-#     chi2 = get_chi2(dv_predict[i], dv_validation[i], mask, cov_inv_masked)
-#     chi2_list.append(chi2)
-#     print(chi2)
-#     if chi2>1:
-#         count +=1
-
-
+# set needed parameters to initialize emulator
 device=torch.device('cpu')
-#torch.set_num_interop_threads(60) # Inter-op parallelism
 torch.set_num_threads(32) # `Intra-op parallelism
-emu = nn_pca_emulator(config.n_dim, BIN_SIZE, config.dv_fid, config.dv_std, cov_inv, cov_inv, 0, 0, device) #should privde dv_max instead of dv_fid, but emu.load will make it correct
-emu.load('projects/lsst_y1/emulator_output/models/model')
-#print(emu.X_mean)
-#print(samples_validation[0])
-print('emulator loaded\n')
+evecs=0
+
+#=====   open trained emulators   =====#
+emu_cs = nn_pca_emulator(config.n_dim, BIN_SIZE, config.dv_fid, config.dv_std, cov_inv, cov_inv, evecs, device)
+emu_22 = nn_pca_emulator(config.n_dim, BIN_SIZE, config.dv_fid, config.dv_std, cov_inv, cov_inv, evecs, device) 
+emu_cs.load('projects/lsst_y1/emulator_output/models/model_T16')
+emu_22.load('projects/lsst_y1/emulator_output/models/model_2x2pt_1x10000')
+emu_cs.model.double()
+emu_22.model.double()
+print('emulator(s) loaded\n')
+
 chi2_list=np.zeros(len(samples_validation))
 count=0
 start_time=datetime.now()
 time_prev=start_time
-predicted_dvs = np.zeros((len(samples_validation),BIN_SIZE))
+predicted_dv = np.zeros(OUTPUT_DIM)
 
 for j in range(len(samples_validation)):
     _j=j+1
 
+    # get params and true dv
     theta = torch.Tensor(samples_validation[j])
-    dv_emu = emu.predict(theta,evecs)[0]
-    predicted_dvs[j] = dv_emu
+    dv_truth = dv_validation[j]
 
-    chi2 = get_chi2(dv_emu, dv_validation[j], mask, cov_inv_masked)
-    chi2_list[j]=chi2
+    # reconstruct dv
+    dv_cs = emu_cs.predict(theta[:12])[0]
+    predicted_dv[:780] = dv_cs
+
+    dv_22 = emu_22.predict(theta[:17])[0]
+    predicted_dv[780:] = dv_22
+
+    # compute chi2
+    chi2 = get_chi2(predicted_dv, dv_truth, mask, cov_inv_masked)
+
+    #count how many points have "poor" prediction.
+    chi2_list[j] = chi2
     if chi2>1:
-       count +=1
+       count += 1
 
+    # progress check
     if j%10==0:
         runtime=datetime.now()-start_time
         print('\rprogress: '+str(j)+'/'+str(len(samples_validation))+\
@@ -151,28 +104,13 @@ for j in range(len(samples_validation)):
             ' | remaining time: '+str(runtime*(len(samples_validation)/_j - 1))+\
             ' | time/it: '+str(runtime/_j),end='')
 
-chi2_list = np.array(chi2_list)
-print(chi2_list)
-#print("testing",chi2_list)
+#summary
 print("\naverage chi2 is: ", np.average(chi2_list))
 print("Warning: This can be different from the training-validation loss. It depends on the mask file you use.")
-print("points with chi2 > 1: ", count)
-
-cmap = plt.cm.get_cmap('coolwarm')
-
-### DEBUG ###
-#print(predicted_dvs.shape)
-#print(cov_inv_masked.shape)
-#print(predicted_dvs[:,mask].shape)
-#diff = predicted_dvs[:,mask] - dv_validation[:,mask]
-#chi2_array = np.diag(diff @ cov_inv_masked @ np.transpose(diff))
-#chi2_list=chi2_array
-print(chi2_list)
-print("\naverage chi2 is: ", np.average(chi2_list))
-print("Warning: This can be different from the training-validation loss. It depends on the mask file you use.")
-print("points with chi2 > 1: ", len(np.where(chi2_list>1)[0]))
+print("points with chi2 > 1: "+str(count)+" ( "+str((count*100)/len(samples_validation))+"% )")
 
 ###PLOT chi2 start
+cmap = plt.cm.get_cmap('coolwarm')
 
 num_bins = 100
 plt.xlabel(r'$\chi^2$')
@@ -193,7 +131,7 @@ plt.savefig("validation_chi2.pdf")
 plt.figure().clear()
 
 #plt.scatter(logA, Omegam, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa', s = 2, cmap=cmap)
-plt.scatter(logA, Omegac, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa', s = 2, cmap=cmap,norm=matplotlib.colors.LogNorm())
+plt.scatter(logA, Omegac, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa (T=8 chain)', s = 2, cmap=cmap,norm=matplotlib.colors.LogNorm())
 #plt.scatter(Omegam, Omegam_growth, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa', s = 2, cmap=cmap,norm=matplotlib.colors.LogNorm())
 #plt.scatter(Omegam, Omegam_growth, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa', s = 2, cmap=cmap)
 #plt.scatter(logA, Omegam_growth, c=chi2_list, label=r'$\chi^2$ between emulator and cocoa', s = 2, cmap=cmap,norm=matplotlib.colors.LogNorm())
