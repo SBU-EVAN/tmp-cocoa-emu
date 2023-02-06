@@ -43,14 +43,48 @@ class ResBlock(nn.Module):
         o2 = self.layer2(self.act2(self.norm2(o1))) / np.sqrt(10) + xskip
 
         return o2
-    
+
+class ResBottle(nn.Module):
+    def __init__(self, size, N):
+        super(ResBottle, self).__init__()
+
+        self.size = size
+        self.N = N
+        encoded_size = size // N
+
+        self.norm1  = torch.nn.BatchNorm1d(encoded_size)
+        self.layer1 = nn.Linear(size,encoded_size)
+        self.act1   = nn.Tanh()
+
+        self.norm2  = torch.nn.BatchNorm1d(encoded_size)
+        self.layer2 = nn.Linear(encoded_size,encoded_size)
+        self.act2   = nn.Tanh()
+
+        self.norm3  = torch.nn.BatchNorm1d(size)
+        self.layer3 = nn.Linear(encoded_size,size)
+        self.act3   = nn.Tanh()
+
+        self.skip     = nn.Identity()#nn.Linear(size,size)
+        self.act_skip = nn.Tanh()
+
+    def forward(self, x):
+        x_skip = self.act_skip(self.skip(x))
+
+        o1 = self.act1(self.norm1(self.layer1(x)))
+        o2 = self.act2(self.norm2(self.layer2(o1)))
+        o3 = self.norm3(self.layer3(o2))
+        o  = self.act3(o3+x_skip)
+
+        return o
+
 class nn_pca_emulator:
     def __init__(self, 
-                  N_DIM, OUTPUT_DIM, 
-                  dv_fid, dv_std, cov_inv_pc, cov_inv_npc,
+                  N_DIM, OUTPUT_DIM, INT_DIM,
+                  dv_fid, dv_std, cov_inv_pc,
                   evecs,
-                  #pca_idxs, idxs_C,
-                  device, 
+                  device,
+                  N=0, 
+                  N_layers=0,
                   optim=None, reduce_lr=True, scheduler=None,
                   dtype='float'):
         if dtype=='double':
@@ -64,11 +98,13 @@ class nn_pca_emulator:
 
         self.N_DIM = N_DIM
         self.OUTPUT_DIM = OUTPUT_DIM
+        self.INT_DIM = INT_DIM
+        self.N = N
+        self.N_layers = N_layers
         
         self.dv_fid  = torch.Tensor(dv_fid)
         self.dv_std  = torch.Tensor(dv_std)
         self.cov_inv_pc = torch.Tensor(cov_inv_pc)  
-        self.cov_inv_npc = torch.Tensor(cov_inv_npc)
 
         self.optim = optim
         self.device = device 
@@ -76,34 +112,50 @@ class nn_pca_emulator:
 
         self.evecs = torch.Tensor(evecs)
 
-        self.trained = False     
-        #self.PCA_vecs = torch.Tensor(PCA_vecs)
+        self.trained = False
         
-        self.model = nn.Sequential(
-                nn.Linear(N_DIM, 4096),
-                ResBlock(4096, 4096),
-                nn.Dropout(0.3),
-                ResBlock(4096, 4096),
-                nn.Dropout(0.3),
-                ResBlock(4096, 4096),
-                nn.Dropout(0.3),
-                # nn.Linear(N_DIM, 12000),
-                # ResBlock(12000, 12000),
-                # nn.Dropout(0.3),
-                nn.Tanh(),
-                nn.Linear(4096, OUTPUT_DIM),
-                Affine()
-            )
-        #print(summary(self.model))
-        summary(self.model)
+        # This model worked will with LSST cosmic shear
+        # self.model = nn.Sequential(
+        #         nn.Linear(N_DIM, 4096),
+        #         ResBlock(4096, 4096),
+        #         nn.Dropout(0.3),
+        #         ResBlock(4096, 4096),
+        #         nn.Dropout(0.3),
+        #         ResBlock(4096, 4096),
+        #         nn.Dropout(0.3),
+        #         nn.Tanh(),
+        #         nn.Linear(4096, OUTPUT_DIM),
+        #         Affine()
+        #     )
 
-        #self.model.to(self.device)
+        # This model worked well for the LSST 2x2 (galaxy clustering and gg-lensing)
+        # self.model = nn.Sequential(
+        #         nn.Linear(N_DIM, 12000),
+        #         ResBlock(12000, 12000),
+        #         nn.Dropout(0.3),
+        #         nn.Tanh(),
+        #         nn.Linear(12000, OUTPUT_DIM),
+        #         Affine()
+        #     )
+
+        # testing this model
+
+        layers = []
+        layers.append(nn.Linear(N_DIM,INT_DIM))
+        layers.append(nn.Tanh())
+        for i in range(self.N_layers):
+            layers.append(ResBottle(INT_DIM, N))
+        layers.append(nn.Linear(INT_DIM,OUTPUT_DIM))
+        layers.append(Affine())
+
+        self.model = nn.Sequential(*layers)
+        summary(self.model)
         
         if self.optim is None:
-            self.optim = torch.optim.Adam(self.model.parameters(), lr=1e-4)
+            self.optim = torch.optim.Adam(self.model.parameters(), lr=1e-3 ,weight_decay=1e-3)
         if self.reduce_lr == True:
             print('Reduce LR on plateu: ',self.reduce_lr)
-            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optim, 'min')
+            self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optim, 'min')#, factor=0.5)
 
     def train(self, X, y, X_validation, y_validation, test_split=None, batch_size=1000, n_epochs=150):
         print('Batch size = ',batch_size)
@@ -112,9 +164,8 @@ class nn_pca_emulator:
 
         # ge normalization factors
         if not self.trained:
-            self.X_mean = torch.Tensor(X.mean(axis=0, keepdims=True).double())
-            print(self.X_mean.shape)
-            self.X_std  = torch.Tensor(X.std(axis=0, keepdims=True).double())
+            self.X_mean = torch.Tensor(X.mean(axis=0, keepdims=True))
+            self.X_std  = torch.Tensor(X.std(axis=0, keepdims=True))
             self.y_mean = self.dv_fid
             self.y_std  = self.dv_std
 
@@ -127,7 +178,6 @@ class nn_pca_emulator:
         self.model.to(self.device)
         tmp_y_std        = self.y_std.to(self.device)
         tmp_cov_inv_pc   = self.cov_inv_pc.to(self.device)
-        tmp_cov_inv_npc  = self.cov_inv_npc.to(self.device)
         tmp_X_mean       = self.X_mean.to(self.device)
         tmp_X_std        = self.X_std.to(self.device)
         tmp_X_validation = (X_validation.to(self.device) - tmp_X_mean)/tmp_X_std
@@ -135,7 +185,7 @@ class nn_pca_emulator:
 
         # Here is the input normalization
         X_train     = ((X - self.X_mean)/self.X_std) # Note that this can mean inputs are <0 !!! Should not use non-symmetric activations
-        y_train     = y#((y - self.y_mean)/self.y_std) 
+        y_train     = y
         trainset    = torch.utils.data.TensorDataset(X_train, y_train)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=1)
     
@@ -145,21 +195,16 @@ class nn_pca_emulator:
             for i, data in enumerate(trainloader):    
                 X       = data[0].to(self.device)
                 Y_batch = data[1].to(self.device)
-                Y_pred  = self.model(X) * tmp_y_std#[self.pca_idxs]
+                Y_pred  = self.model(X) * tmp_y_std
 
                 # PCA part
-                diff = Y_batch - Y_pred#[:,self.pca_idxs] - Y_pred
+                diff = Y_batch - Y_pred
                 loss1 = (diff \
                         @ tmp_cov_inv_pc) \
                         @ torch.t(diff)
-                # non-PCA part
-                #loss2 = (Y_batch[:,self.idxs_C] \
-                #        @ tmp_cov_inv_npc) \
-                #        @ torch.t(Y_batch[:,self.idxs_C])
 
                 loss = torch.mean(torch.diag(loss1))#+loss2))
                 losses.append(loss.cpu().detach().numpy())
-                #print('[ debug ] mean batch diff =',torch.mean(Y_batch-Y_pred).cpu().detach().numpy(),file=sys.stderr)
                 self.optim.zero_grad()
                 loss.backward()
                 self.optim.step()
@@ -167,15 +212,12 @@ class nn_pca_emulator:
             ###validation loss
             with torch.no_grad():
                 self.model.eval()
-                Y_v_pred = self.model(tmp_X_validation) * tmp_y_std#[self.pca_idxs]
-                v_diff = tmp_Y_validation - Y_v_pred #[:,self.pca_idxs] - Y_v_pred
+                Y_v_pred = self.model(tmp_X_validation) * tmp_y_std
+                v_diff = tmp_Y_validation - Y_v_pred 
                 loss_vali1 = (v_diff \
                                 @ tmp_cov_inv_pc) @ \
                                 torch.t(v_diff)
-                #loss_vali2 = ((tmp_Y_validation#[:,self.idxs_C]) \
-                #                @ tmp_cov_inv_npc) @ \
-                #                torch.t(tmp_Y_validation[:,self.idxs_C])
-                loss_vali = torch.mean(torch.diag(loss_vali1))#+loss_vali2))
+                loss_vali = torch.mean(torch.diag(loss_vali1))
  
                 losses_vali.append(np.float(loss_vali.cpu().detach().numpy()))
                 losses_train.append(np.mean(losses))
@@ -183,10 +225,8 @@ class nn_pca_emulator:
                     self.scheduler.step(loss_vali)
 
             print('epoch {}, loss={}, validation loss={}'.format(e,losses_train[-1],losses_vali[-1]))
-            #epoch_range.set_description('Loss: {0}, Loss_validation: {1}'.format(loss, loss_vali))
         
         np.savetxt("losses.txt", np.array([losses_train,losses_vali],dtype=np.float64))
-        #np.savetxt("test_dv.txt", np.array( [y_validation.detach().numpy()[-1], y_vali_pred.detach().numpy()[-1]] ), fmt='%s')
         self.trained = True
 
     def predict(self, X):
@@ -195,16 +235,7 @@ class nn_pca_emulator:
         with torch.no_grad():
             y_pred = (self.model((X - self.X_mean) / self.X_std).double() * self.dv_std.double()).numpy() #normalization
 
-        y_pred = y_pred @ np.linalg.inv(self.evecs)+ np.array([self.dv_fid.numpy()]) #@ (np.transpose(evecs))+ self.dv_fid.numpy() #change of basis
-        return y_pred
-
-    def predict_evecs(self, X, evec_arr):
-        assert self.trained, "The emulator needs to be trained first before predicting"
-
-        with torch.no_grad():
-            y_pred = (self.model((X - self.X_mean) / self.X_std).double() * self.dv_std.double()).numpy() #normalization
-            
-        y_pred = y_pred @ np.linalg.inv(evec_arr)+ np.array([self.dv_fid.numpy()]) #@ (np.transpose(evecs))+ self.dv_fid.numpy() #change of basis
+        y_pred = y_pred @ np.linalg.inv(self.evecs)+ np.array([self.dv_fid.numpy()]) # convert back to data basis
         return y_pred
 
     def save(self, filename):
