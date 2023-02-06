@@ -25,17 +25,17 @@ Each ResBottle is structure as follows (y is the input to the block):
 - batch normalization
 - add y to the batch-normed result
 - activation
-- 
+
 In general, you can run with
 
     conda activate cocoatorch
     python3 train_emulator.py \
-  				(path/to/training .yaml) \
-  				(path/to/training samples \
-  				--auto \
-  				(internal dimension) \
-  				(N to divide the internal dimension) \
-  				(n_layers of residual bottleneck blocks)
+  	    (path/to/training .yaml) \
+  		(path/to/training samples \
+  		--auto \
+  		(internal dimension) \
+  		(N to divide the internal dimension) \
+  		(n_layers of residual bottleneck blocks)
           
 The recommended starting point is internal dimension=64, N=8, and n_layer=1.
 
