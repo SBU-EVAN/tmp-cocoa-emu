@@ -5,7 +5,7 @@ import torch
 sys.path.insert(0, os.path.abspath(".."))
 
 from cocoa_emu import Config
-from cocoa_emu import NNEmulator, nn_pca_emulator 
+from cocoa_emu import nn_pca_emulator 
 
 debug=False # flag to enable debug messages
 thin_int=1  # thins data vectors when shuffling. Not needed anymore
@@ -18,10 +18,27 @@ config = Config(configfile)
 train_samples_files = sys.argv[2]
 file = sys.argv[2]
 
+if '--auto' in sys.argv:
+    idx = sys.argv.index('--auto')
+    print('running in automatic mode')
+
+    int_dim = int(sys.argv[idx+1])
+    N = int(sys.argv[idx+2])
+    n_layers = int(sys.argv[idx+3])
+
+    print('internal dimension:', int_dim)
+    print('bottlneck factor:  ', N)
+    print('number of layers:  ', n_layers)
+
+ 
+else:
+    int_dim = 128
+    N=0
+
 #Open first dv file.
 print('Opening:',file)
-train_samples=np.load(file+'_samples_0.npy')#.append(np.load(file+'_samples_0.npy'))
-train_data_vectors=np.load(file+'_data_vectors_0.npy')#.append(np.load(file+'_data_vectors_0.npy'))
+train_samples=np.load(file+'_samples_0.npy')#[::10]
+train_data_vectors=np.load(file+'_data_vectors_0.npy')#[::10]
 if debug:
     print('(debug)')
     print('first file')
@@ -29,9 +46,9 @@ if debug:
     print(train_data_vectors[0])
     print('(end debug)')
 
-#print("length of samples from LHS: ", train_samples.shape)
-
 #### adjust validation root directories to your sample directory
+# You can add more probes. These are used when cutting up your data vector.
+# They do NOT consider cross correlations between the components. Thus the total delta chi^2 is not the sum of the loss of each model
 if config.probe=='cosmic_shear':
     print("training for cosmic shear only")
     start=0
@@ -101,8 +118,10 @@ def get_chi_sq_cut(train_data_vectors, chi2_cut):
 # train_samples      = train_samples[select_chi_sq]
 
 #print("training LHC samples after chi2 cut: ", len(train_samples))
+# NOT USING CHI2 CUT FOR CHAIN
 
 # Now add more training samples from files named 'file_samples_1','file_samples_2', etc.
+'''
 if len(sys.argv) > 3:
     for i in range(3,len(sys.argv)):
         print("Opening File:",sys.argv[i])
@@ -110,19 +129,17 @@ if len(sys.argv) > 3:
         train_data_vectors_file2 = np.load(sys.argv[i]+'_data_vectors_'+str(i-2)+'.npy')[:,start:stop]
         train_samples = np.vstack((train_samples, train_samples_file2))
         train_data_vectors = np.vstack((train_data_vectors, train_data_vectors_file2))
-    
-    #print("posterior samples contains: ", len(train_samples_file2))
+'''
 
-##Normalize the data vectors for training based on the maximum##
+#### THIS IS MAX NORMALIZATION                                               ####
+#### NORMALIZING TO NORMAL DISTRIBUTION IS DONE BELOW DURING DIAGONALIZATION ####
 #dv_max = np.abs(train_data_vectors).max(axis=0)
 #train_data_vectors = train_data_vectors / dv_max
 
 
 ###============= Setting up validation set ============
-validation_samples      = np.load(validation_root+'_samples_0.npy')[::60,:12] # careful with thinning!
-validation_data_vectors = np.load(validation_root+'_data_vectors_0.npy')[::60,start:stop] #Thin only to number of validation dvs you want!
-print(validation_samples.shape)
-print(validation_data_vectors.shape)
+validation_samples      = np.load(validation_root+'_samples_0.npy')[::600,:12] # careful with thinning!
+validation_data_vectors = np.load(validation_root+'_data_vectors_0.npy')[::600,start:stop] #Thin only to number of validation dvs you want!
 #====================chi2 cut for validation dvs===========================
 select_chi_sq = get_chi_sq_cut(validation_data_vectors, 7000)
 selected_obj = np.sum(select_chi_sq)
@@ -135,7 +152,6 @@ total_obj    = len(select_chi_sq)
 def unison_shuffled_copies(a, b, thin=False):
     assert len(a) == len(b)
     p = np.random.permutation(len(a))
-    #print(p)
     samples = a[p]
     dvs     = b[p]
     return samples[0::thin_int], dvs[0::thin_int]
@@ -160,30 +176,25 @@ if config.do_PCA:
     n_PCA = config.n_PCA
     if n_PCA>OUTPUT_DIM:
         n_PCA=OUTPUT_DIM
-        
-    #sorted_idxs = np.argsort(1/evals)
 
-    # Now we change basis to the eigenbasis
+    # Now we change basis to the eigenbasis + do the normalization
     dv = np.array([dv_fid for _ in range(len(train_data_vectors))])
-    train_data_vectors = np.transpose((np.linalg.inv(evecs) @ np.transpose(train_data_vectors - dv)))#[pc_idxs])
+    train_data_vectors = np.transpose((np.linalg.inv(evecs) @ np.transpose(train_data_vectors - dv)))
     dv = np.array([dv_fid for _ in range(len(validation_data_vectors))])
-    validation_data_vectors = np.transpose((np.linalg.inv(evecs) @ np.transpose(validation_data_vectors - dv)))#[pc_idxs])
-    #np.save('validation_dvs_transformed.npy',validation_data_vectors)
+    validation_data_vectors = np.transpose((np.linalg.inv(evecs) @ np.transpose(validation_data_vectors - dv)))
 
+    # compute the diagonalized cov
     cov_inv_pc = np.diag(1/evals)#[pc_idxs])
-    cov_inv_npc = np.diag(1/evals)#[non_pc_idxs])
-    dv_std = np.sqrt(evals)*10
+    dv_std = np.sqrt(evals) # the factor of 10 accounts for the high-temperature chain I am using in training
     print('N_PCs:', n_PCA)
-    print('cov inv pc shape:',cov_inv_pc.shape)
-    print('cov inv non-pc shape:',cov_inv_npc.shape)
+    print('cov inv shape:',cov_inv_pc.shape)
+
     # fix output dim
     OUTPUT_DIM = n_PCA
 
-#    if debug:
-    #print('[ debug ]   PCA bais training DV array shape:', train_data_vectors.shape)#, file=sys.stderr)
 print("Number of training points:  ", len(train_samples))
 print("Number of validation points:", len(validation_samples))
-#print("Training emulator...")
+
 # cuda or cpu
 print('cuda device avaliable?  ',torch.cuda.is_available())
 if torch.cuda.is_available():
@@ -191,7 +202,7 @@ if torch.cuda.is_available():
 else:
     device = 'cpu'
     torch.set_num_interop_threads(32) # Inter-op parallelism
-    torch.set_num_threads(32) # `Intra-op parallelism
+    torch.set_num_threads(32) # Intra-op parallelism
 
 print('Using device: ',device)
     
@@ -200,15 +211,14 @@ TDV = torch.Tensor(train_data_vectors)
 VS = torch.Tensor(validation_samples)
 VDV = torch.Tensor(validation_data_vectors)
 
-emu = nn_pca_emulator(12, n_PCA, #config.n_dim
-                        dv_fid, dv_std, cov_inv_pc,cov_inv_npc,
+emu = nn_pca_emulator(12, n_PCA, int_dim, #config.n_dim
+                        dv_fid, dv_std, cov_inv_pc,
                         evecs, 
-                        #pc_idxs, non_pc_idxs,
-                        device, reduce_lr=True, dtype='double') # dtype is not strictly necessary at all. Remove for the default float
-emu.train(TS, TDV, VS, VDV, batch_size=10000,n_epochs=250)# n_epochs=config.n_epochs)
-print("model saved to ",str(config.savedir))
-emu.save(config.savedir + '/model_'+str(config.probe))
+                        device, N=N, N_layers=n_layers, reduce_lr=True)
 
+emu.train(TS, TDV, VS, VDV, batch_size=2500,n_epochs=150)# n_epochs=config.n_epochs)
+print("model saved to ",str(config.savedir))
+emu.save(config.savedir + '/for_tables/'+str(config.probe)+'_nlayer_'+str(n_layers)+'_intdim_'+str(int_dim)+'_frac_'+str(N)) # Rename your model :)
 
 print("DONE!!")   
 
