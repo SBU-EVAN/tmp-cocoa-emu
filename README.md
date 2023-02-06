@@ -28,8 +28,8 @@ Each ResBottle is structure as follows (y is the input to the block):
 - 
 In general, you can run with
 
-  conda activate cocoatorch
-  python3 train_emulator.py \
+    conda activate cocoatorch
+    python3 train_emulator.py \
   				(path/to/training .yaml) \
   				(path/to/training samples \
   				--auto \
