@@ -5,10 +5,9 @@ import torch
 import getdist
 from datetime import datetime
 
-sys.path.insert(0, os.path.abspath(".."))
+sys.path.insert(0, os.path.abspath("./projects/lsst_y1/"))
 
-from cocoa_emu import Config, get_lhs_params_list, get_params_list, CocoaModel
-from cocoa_emu.sampling import EmuSampler
+from cocoa_emu import cocoa_config, get_lhs_params_list, get_params_list, CocoaModel
 
 starttime = datetime.now()
 # MPI Setup
@@ -24,7 +23,7 @@ start = int(sys.argv[4])
 stop  = int(sys.argv[5])
 print(start,stop)
 
-config = Config(configfile)
+config = cocoa_config(configfile)
 
 # For no shift, set:
 # shift='none'
@@ -32,7 +31,7 @@ config = Config(configfile)
 shift=sys.argv[2]
 idx = sys.argv[3]
 
-print(config.param_labels)
+#print(config.param_labels)
 
 # ============= samples from posterior =========
 def get_samples_from_posterior(file_name,):
